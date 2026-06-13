@@ -44,22 +44,22 @@ with ZyxelRouter("http://192.168.1.1", "admin", "password") as router:
 
     # Add a new rule (the router assigns its Index; protocol is TCP/UDP/ALL)
     router.add_port_forward(
-        description="seedbox", internal_client="192.168.1.125",
-        external_port=31778, protocol="ALL",
+        description="web", internal_client="192.168.1.10",
+        external_port=80, protocol="TCP",
     )
 
     # Modify fields of an existing rule (raw rule keys, as returned by list)
-    router.update_port_forward({"Protocol": "ALL"}, description="seedbox")
+    router.update_port_forward({"InternalClient": "192.168.1.20"}, description="web")
 
     # Toggle a rule off then on (the workaround for Zyxel dropping the forward)
-    router.reset_port_forward(description="seedbox")
+    router.reset_port_forward(description="web")
 
     # Or set state directly
     router.set_port_forward_enabled(False, index=3)
     router.set_port_forward_enabled(True, index=3)
 
     # Delete a rule
-    router.delete_port_forward(description="seedbox")
+    router.delete_port_forward(description="web")
 ```
 
 Rules can be matched by `index`, `description`, and/or `internal_client` (the
@@ -75,12 +75,12 @@ export ZYXEL_USER=admin
 export ZYXEL_PASSWORD=secret
 
 zyxelctl list
-zyxelctl add --description seedbox --client 192.168.1.125 --external-port 31778 --protocol ALL
-zyxelctl update --description seedbox --set Protocol=ALL --set ExternalPortStart=31778
-zyxelctl reset --description seedbox
+zyxelctl add --description web --client 192.168.1.10 --external-port 80 --protocol TCP
+zyxelctl update --description web --set InternalClient=192.168.1.20
+zyxelctl reset --description web
 zyxelctl disable --index 3
 zyxelctl enable  --index 3
-zyxelctl delete --description seedbox
+zyxelctl delete --description web
 ```
 
 `add` takes `--internal-port` (defaults to the external port), `--external-port-end`
@@ -93,7 +93,7 @@ and overwrites the `--set KEY=VALUE` fields — keys are the raw rule keys shown
 ### Hourly reset with cron
 
 ```cron
-17 * * * * ZYXEL_PASSWORD=secret /usr/bin/zyxelctl reset --description seedbox >> /var/log/zyxelctl.log 2>&1
+17 * * * * ZYXEL_PASSWORD=secret /usr/bin/zyxelctl reset --description web >> /var/log/zyxelctl.log 2>&1
 ```
 
 ## How it works
