@@ -184,6 +184,115 @@ class ZyxelRouter:
             raise ZyxelError("rule did not come back enabled after reset")
         return rule
 
+    def add_port_forward(
+        self,
+        *,
+        description: str,
+        internal_client: str,
+        external_port: int,
+        internal_port: int | None = None,
+        protocol: str = "ALL",
+        external_port_end: int | None = None,
+        internal_port_end: int | None = None,
+        interface: str | None = None,
+        enable: bool = True,
+        set_remote_ip: bool = False,
+        remote_host: str = "",
+        auto_detect_wan_status: bool = False,
+    ) -> dict[str, Any]:
+        """Create a new port-forward rule (the router assigns its ``Index``).
+
+        ``protocol`` is one of ``"TCP"``, ``"UDP"`` or ``"ALL"`` (TCP+UDP).
+        ``internal_port`` defaults to ``external_port``; the ``*_end`` arguments
+        default to their respective start, i.e. a single-port forward.
+        ``interface`` is the WAN interface (e.g. ``"IP.Interface.4"``); if
+        omitted it is taken from the existing rules.
+
+        Returns the rule that was sent.
+        """
+        if interface is None:
+            existing = self.get_port_forwards()
+            if not existing:
+                raise ZyxelError(
+                    "cannot infer interface (no existing rules); pass interface="
+                )
+            interface = existing[0]["Interface"]
+
+        ext_end = external_port if external_port_end is None else external_port_end
+        int_start = external_port if internal_port is None else internal_port
+        int_end = int_start if internal_port_end is None else internal_port_end
+
+        rule = {
+            "Enable": enable,
+            "Protocol": protocol,
+            "Description": description,
+            "Interface": interface,
+            "ExternalPortStart": external_port,
+            "ExternalPortEnd": ext_end,
+            "InternalPortStart": int_start,
+            "InternalPortEnd": int_end,
+            "InternalClient": internal_client,
+            "SetRemoteIP": set_remote_ip,
+            "RemoteHost": remote_host,
+            "X_ZYXEL_AutoDetectWanStatus": auto_detect_wan_status,
+        }
+        data = self._dal_post("nat", rule)
+        if data.get("result") != "ZCFG_SUCCESS":
+            raise ZyxelError(f"failed to add rule: {data.get('result')}")
+        return rule
+
+    def update_port_forward(
+        self,
+        changes: dict[str, Any],
+        *,
+        index: int | None = None,
+        description: str | None = None,
+        internal_client: str | None = None,
+    ) -> dict[str, Any]:
+        """Modify fields of an existing rule.
+
+        Select the rule by ``index`` / ``description`` / ``internal_client``,
+        then overwrite the keys in ``changes`` (raw Zyxel rule keys, e.g.
+        ``{"Protocol": "ALL", "ExternalPortStart": 6881}`` — the same keys
+        ``get_port_forwards()`` returns). Returns the updated rule.
+        """
+        if not changes:
+            raise ValueError("changes must be a non-empty dict of rule fields")
+        rule = self._find_rule(
+            self.get_port_forwards(),
+            index=index,
+            description=description,
+            internal_client=internal_client,
+        )
+        updated = dict(rule)
+        updated.update(changes)
+        data = self._dal_put("nat", updated)
+        if data.get("result") != "ZCFG_SUCCESS":
+            raise ZyxelError(f"failed to update rule: {data.get('result')}")
+        return updated
+
+    def delete_port_forward(
+        self,
+        *,
+        index: int | None = None,
+        description: str | None = None,
+        internal_client: str | None = None,
+    ) -> dict[str, Any]:
+        """Delete a single port-forward rule (matched like the others).
+
+        Returns the rule that was deleted.
+        """
+        rule = self._find_rule(
+            self.get_port_forwards(),
+            index=index,
+            description=description,
+            internal_client=internal_client,
+        )
+        data = self._dal_delete("nat", Index=rule["Index"])
+        if data.get("result") != "ZCFG_SUCCESS":
+            raise ZyxelError(f"failed to delete rule: {data.get('result')}")
+        return rule
+
     # -- internals ---------------------------------------------------------
 
     @staticmethod
@@ -239,25 +348,53 @@ class ZyxelRouter:
         )
         return self._decrypt_response(resp)
 
-    def _dal_put(self, oid: str, obj: dict[str, Any]) -> dict[str, Any]:
+    def _csrf_headers(self) -> dict[str, str]:
+        return {"CSRFToken": self._sessionkey} if self._sessionkey else {}
+
+    def _track_sessionkey(self, data: dict[str, Any]) -> dict[str, Any]:
+        # The sessionkey rotates on every write; keep the latest for the next one.
+        if data.get("sessionkey"):
+            self._sessionkey = data["sessionkey"]
+        return data
+
+    def _dal_write(self, method: str, oid: str, obj: dict[str, Any]) -> dict[str, Any]:
+        """``POST`` (create) or ``PUT`` (edit) an object on the DAL endpoint.
+
+        The body is the object AES-encrypted to ``{content, iv}`` with the
+        session key, exactly as the web UI does for writes.
+        """
         self._require_login()
         iv = os.urandom(16)
         body = {
             "content": _aes_encrypt(json.dumps(obj).encode(), self._aes_key, iv),
             "iv": _b64(iv),
         }
-        headers = {"CSRFToken": self._sessionkey} if self._sessionkey else {}
-        resp = self._session.put(
+        resp = self._session.request(
+            method,
             f"{self.host}/cgi-bin/DAL?oid={oid}",
             json=body,
-            headers=headers,
+            headers=self._csrf_headers(),
             timeout=self.timeout,
         )
-        data = self._decrypt_response(resp)
-        # The sessionkey rotates on every write; keep the latest for the next one.
-        if data.get("sessionkey"):
-            self._sessionkey = data["sessionkey"]
-        return data
+        return self._track_sessionkey(self._decrypt_response(resp))
+
+    def _dal_put(self, oid: str, obj: dict[str, Any]) -> dict[str, Any]:
+        return self._dal_write("PUT", oid, obj)
+
+    def _dal_post(self, oid: str, obj: dict[str, Any]) -> dict[str, Any]:
+        return self._dal_write("POST", oid, obj)
+
+    def _dal_delete(self, oid: str, **params: Any) -> dict[str, Any]:
+        """``DELETE`` on the DAL endpoint. Selectors (e.g. ``Index=3``) go in
+        the query string — the web UI sends no body for deletes."""
+        self._require_login()
+        url = f"{self.host}/cgi-bin/DAL?oid={oid}"
+        for key, value in params.items():
+            url += f"&{key}={value}"
+        resp = self._session.delete(
+            url, headers=self._csrf_headers(), timeout=self.timeout
+        )
+        return self._track_sessionkey(self._decrypt_response(resp))
 
     def _require_login(self) -> None:
         if not self.logged_in:

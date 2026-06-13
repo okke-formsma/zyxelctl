@@ -8,10 +8,10 @@ AES-256 session key, sends the login credentials AES-encrypted with that key
 RSA-encrypted, and then reuses the AES key for every subsequent request and
 response. `zyxelctl` replicates that handshake so you can script the router.
 
-Right now it does just two things: **log in** and **manage port-forward rules**
-(list / enable / disable / reset). It was built to work around a Zyxel bug where
-a port-forward silently stops working until the rule is toggled off and on
-again.
+Right now it does two things: **log in** and **manage port-forward rules**
+(list / add / update / enable / disable / reset / delete). It was built to work
+around a Zyxel bug where a port-forward silently stops working until the rule is
+toggled off and on again.
 
 > Tested against a Zyxel gateway exposing `/getRSAPublickKey`, `/UserLogin` and
 > `/cgi-bin/DAL?oid=nat`. Other models using the same web UI should work; YMMV.
@@ -42,12 +42,24 @@ with ZyxelRouter("http://192.168.1.1", "admin", "password") as router:
     for rule in router.get_port_forwards():
         print(rule["Index"], rule["Description"], rule["Enable"])
 
+    # Add a new rule (the router assigns its Index; protocol is TCP/UDP/ALL)
+    router.add_port_forward(
+        description="seedbox", internal_client="192.168.1.125",
+        external_port=31778, protocol="ALL",
+    )
+
+    # Modify fields of an existing rule (raw rule keys, as returned by list)
+    router.update_port_forward({"Protocol": "ALL"}, description="seedbox")
+
     # Toggle a rule off then on (the workaround for Zyxel dropping the forward)
     router.reset_port_forward(description="seedbox")
 
     # Or set state directly
     router.set_port_forward_enabled(False, index=3)
     router.set_port_forward_enabled(True, index=3)
+
+    # Delete a rule
+    router.delete_port_forward(description="seedbox")
 ```
 
 Rules can be matched by `index`, `description`, and/or `internal_client` (the
@@ -63,10 +75,20 @@ export ZYXEL_USER=admin
 export ZYXEL_PASSWORD=secret
 
 zyxelctl list
+zyxelctl add --description seedbox --client 192.168.1.125 --external-port 31778 --protocol ALL
+zyxelctl update --description seedbox --set Protocol=ALL --set ExternalPortStart=31778
 zyxelctl reset --description seedbox
 zyxelctl disable --index 3
 zyxelctl enable  --index 3
+zyxelctl delete --description seedbox
 ```
+
+`add` takes `--internal-port` (defaults to the external port), `--external-port-end`
+/ `--internal-port-end` for ranges, `--interface` (defaults to the WAN interface
+of existing rules), and `--disabled` to create it switched off. `update` selects a
+rule the same way the other commands do (`--index` / `--description` / `--client`)
+and overwrites the `--set KEY=VALUE` fields — keys are the raw rule keys shown by
+`list` (values are coerced to int / bool / str).
 
 ### Hourly reset with cron
 

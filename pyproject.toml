@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "zyxelctl"
-version = "0.1.0"
+version = "0.2.0"
 description = "A small client for the Zyxel router web configurator (login + port forwards)"
 readme = "README.md"
 license = { text = "MIT" }

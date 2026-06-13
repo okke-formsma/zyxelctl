@@ -24,6 +24,27 @@ def _selectors(args: argparse.Namespace) -> dict:
     )
 
 
+def _coerce(value: str):
+    """Turn a CLI string into int / bool / str so rule fields get sane types."""
+    if value.lower() in ("true", "false"):
+        return value.lower() == "true"
+    try:
+        return int(value)
+    except ValueError:
+        return value
+
+
+def _parse_set(pairs: list[str] | None) -> dict:
+    """Parse repeated ``--set KEY=VALUE`` flags into a dict of typed changes."""
+    changes: dict = {}
+    for item in pairs or []:
+        if "=" not in item:
+            raise SystemExit(f"--set expects KEY=VALUE, got {item!r}")
+        key, value = item.split("=", 1)
+        changes[key] = _coerce(value)
+    return changes
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="zyxelctl", description="Control a Zyxel router (login + port forwards)."
@@ -64,6 +85,38 @@ def build_parser() -> argparse.ArgumentParser:
     p_disable = sub.add_parser("disable", help="disable a port-forward rule")
     _add_selectors(p_disable)
 
+    p_add = sub.add_parser("add", help="add a new port-forward rule")
+    p_add.add_argument("--description", required=True, help="rule name")
+    p_add.add_argument(
+        "--client", dest="internal_client", required=True, help="forwarded-to LAN IP"
+    )
+    p_add.add_argument(
+        "--external-port", type=int, required=True, help="WAN port to forward"
+    )
+    p_add.add_argument(
+        "--internal-port", type=int, help="LAN port (default: same as external)"
+    )
+    p_add.add_argument(
+        "--protocol", default="ALL", choices=["TCP", "UDP", "ALL"],
+        help="ALL = TCP+UDP (default)",
+    )
+    p_add.add_argument("--external-port-end", type=int, help="end of WAN port range")
+    p_add.add_argument("--internal-port-end", type=int, help="end of LAN port range")
+    p_add.add_argument("--interface", help="WAN interface (default: from existing rules)")
+    p_add.add_argument(
+        "--disabled", action="store_true", help="create the rule disabled"
+    )
+
+    p_update = sub.add_parser("update", help="modify fields of an existing rule")
+    _add_selectors(p_update)
+    p_update.add_argument(
+        "--set", dest="sets", action="append", metavar="KEY=VALUE",
+        help="rule field to change (repeatable), e.g. --set Protocol=ALL",
+    )
+
+    p_delete = sub.add_parser("delete", help="delete a port-forward rule")
+    _add_selectors(p_delete)
+
     return parser
 
 
@@ -90,6 +143,33 @@ def main(argv: list[str] | None = None) -> int:
             elif args.command == "disable":
                 router.set_port_forward_enabled(False, **_selectors(args))
                 print("disabled")
+            elif args.command == "add":
+                rule = router.add_port_forward(
+                    description=args.description,
+                    internal_client=args.internal_client,
+                    external_port=args.external_port,
+                    internal_port=args.internal_port,
+                    protocol=args.protocol,
+                    external_port_end=args.external_port_end,
+                    internal_port_end=args.internal_port_end,
+                    interface=args.interface,
+                    enable=not args.disabled,
+                )
+                print(f"added: {rule['Description']} {rule['Protocol']} "
+                      f"{rule['ExternalPortStart']}->{rule['InternalClient']}:"
+                      f"{rule['InternalPortStart']}")
+            elif args.command == "update":
+                changes = _parse_set(args.sets)
+                if not changes:
+                    print("error: nothing to change (pass --set KEY=VALUE)",
+                          file=sys.stderr)
+                    return 2
+                rule = router.update_port_forward(changes, **_selectors(args))
+                print(f"updated: rule {rule.get('Index')} "
+                      f"({rule.get('Description')}) {changes}")
+            elif args.command == "delete":
+                rule = router.delete_port_forward(**_selectors(args))
+                print(f"deleted: rule {rule.get('Index')} ({rule.get('Description')})")
     except ZyxelError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
