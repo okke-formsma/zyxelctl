@@ -18,14 +18,18 @@ again.
 
 ## Install
 
-```bash
-pip install zyxelctl
-```
-
-Or from source:
+Not on PyPI — install from GitHub:
 
 ```bash
 pip install git+https://github.com/okke-formsma/zyxelctl
+```
+
+Or clone and install in editable mode for development:
+
+```bash
+git clone https://github.com/okke-formsma/zyxelctl
+cd zyxelctl
+pip install -e .
 ```
 
 ## Library usage
